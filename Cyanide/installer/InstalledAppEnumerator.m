@@ -2,19 +2,31 @@
 //  InstalledAppEnumerator.m
 //  Cyanide
 //
-//  MIP (mobile_installation_proxy) based installed-app enumeration with an
-//  LSApplicationWorkspace fallback.
+//  Enumerates installed apps by walking /var/containers/Bundle/Application/
+//  and reading each <UUID>/Foo.app/Info.plist.
 //
-//  Why MIP first:
-//    - The original Cyanide 1.2.24 IPA used mobile_installation_proxy.
-//    - LSApplicationWorkspace from a non-SpringBoard process returns an empty
-//      list on iOS 17+ (confirmed by the user's empty "Installed Apps" UI),
-//      so it is only used as a last-resort fallback here.
+//  This is the path the original 2nd-edition Cyanide IPA actually used (verified
+//  by class-dumping AppListViewController — its -loadApps impl reads plists
+//  directly off disk; there is no LSW/MIP/enumerateInstalledApplications
+//  selector in its ObjC metadata).
 //
-//  MIP protocol (XPC service "com.apple.mobile.installation_proxy"):
-//    -> {"Command": "Lookup", "ClientOptions": {"ApplicationType": "User"}}
-//    <- {"LookupResult": [ {CFBundleIdentifier, CFBundleDisplayName,
-//                           CFBundleShortVersionString, ...}, ... ]}
+//  Why filesystem traversal:
+//    - LSApplicationWorkspace on iOS 17+ returns an empty list when called
+//      from a non-SpringBoard process that lacks the platform entitlement.
+//    - mobile_installation_proxy (MIP XPC) requires the same entitlement and
+//      silently returns no reply without it.
+//    - Direct plist reads of every installed .app's Info.plist need no
+//      entitlement and work even when KRW is unavailable (as long as the app
+//      sandbox can stat /var/containers/Bundle/Application, which is allowed
+//      for store-installed apps on stock iOS).
+//
+//  What gets lost vs. the LSW/MIP paths:
+//    - Hidden apps (LSApplicationProxyHiddenReasonKey > 0) are still visible.
+//      That's fine for Downgrade (the user wants to see what's installed).
+//    - Apps whose Info.plist is unreadable for any reason are skipped with
+//      a log line, not enumerated as zero.
+//
+//  Result is sorted case-insensitively by display name.
 //
 
 #import "InstalledAppEnumerator.h"
@@ -26,118 +38,65 @@
 @implementation InstalledApp
 @end
 
-#pragma mark - MIP (mobile_installation_proxy) enumeration
+#pragma mark - Filesystem enumeration
 
-// xpc_connection_create_mach_service is marked unavailable in the iOS 26 SDK,
-// but the symbol is still present at runtime on all iOS versions. Resolve it
-// dynamically (standard practice for private XPC services) so this compiles
-// and runs on iOS 17+.
-typedef xpc_connection_t (*xpc_conn_mach_svc_fn)(const char *name,
-                                                 dispatch_queue_t targetq,
-                                                 uint64_t flags);
+static NSString * const kAppBundleRoot = @"/var/containers/Bundle/Application";
 
-static xpc_conn_mach_svc_fn xpc_conn_mach_svc_resolve(void)
-{
-    static xpc_conn_mach_svc_fn fn = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        fn = (xpc_conn_mach_svc_fn)dlsym(RTLD_DEFAULT,
-                                         "xpc_connection_create_mach_service");
-    });
-    return fn;
-}
-
-static NSArray<InstalledApp *> *enumerateViaMobileInstallationProxy(void)
+static NSArray<InstalledApp *> *scanInstalledAppsFromFilesystem(void)
 {
     NSMutableArray<InstalledApp *> *apps = [NSMutableArray array];
 
-    xpc_conn_mach_svc_fn createMachService = xpc_conn_mach_svc_resolve();
-    if (!createMachService) {
-        log_user("[APPLIST] MIP: xpc_connection_create_mach_service not resolvable.\n");
-        return apps;
-    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSURL *root = [NSURL fileURLWithPath:kAppBundleRoot isDirectory:YES];
+    NSDirectoryEnumerator<NSURL *> *enumerator = [fm enumeratorAtURL:root
+                                             includingPropertiesForKeys:@[ NSURLIsDirectoryKey, NSURLPathKey ]
+                                                                options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                           errorHandler:^(NSURL *url, NSError *err) {
+        // Don't bail out on a single error; just keep going.
+        return YES;
+    }];
 
-    xpc_connection_t conn = createMachService(
-        "com.apple.mobile.installation_proxy", NULL, 0);
-    if (!conn) {
-        log_user("[APPLIST] MIP: failed to create connection.\n");
-        return apps;
-    }
+    for (NSURL *url in enumerator) {
+        NSNumber *isDir = nil;
+        if (![url getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:NULL] ||
+            !isDir.boolValue) {
+            continue;
+        }
+        // Only descend one level: <UUID>/<Foo.app>/Info.plist
+        NSString *path = url.path;
+        NSString *lastSegment = path.lastPathComponent;
+        if (!lastSegment.length || ![lastSegment hasSuffix:@".app"]) continue;
 
-    xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
-        // Errors/notifications only; Lookup is synchronous.
-    });
-    xpc_connection_resume(conn);
+        NSString *infoPlistPath = [path stringByAppendingPathComponent:@"Info.plist"];
+        NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
+        if (![plist isKindOfClass:[NSDictionary class]]) {
+            continue; // skip silently — many apps have non-dict Info.plists if corrupt
+        }
 
-    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
-    xpc_dictionary_set_string(request, "Command", "Lookup");
+        NSString *bundleID = plist[@"CFBundleIdentifier"];
+        if (![bundleID isKindOfClass:[NSString class]] || !bundleID.length) continue;
 
-    xpc_object_t options = xpc_dictionary_create(NULL, NULL, 0);
-    xpc_dictionary_set_string(options, "ApplicationType", "User");
-    xpc_dictionary_set_value(request, "ClientOptions", options);
+        NSString *name = plist[@"CFBundleDisplayName"];
+        if (![name isKindOfClass:[NSString class]] || !name.length) {
+            name = plist[@"CFBundleName"];
+        }
+        if (![name isKindOfClass:[NSString class]] || !name.length) {
+            name = bundleID;
+        }
 
-    xpc_object_t reply = xpc_connection_send_message_with_reply_sync(conn, request);
-    if (!reply || xpc_get_type(reply) != XPC_TYPE_DICTIONARY) {
-        log_user("[APPLIST] MIP: no reply (err=%s)\n",
-                 reply ? xpc_dictionary_get_string(reply, "error") : "nil");
-        xpc_connection_cancel(conn);
-        return apps;
-    }
-
-    xpc_object_t results = xpc_dictionary_get_value(reply, "LookupResult");
-    if (!results || xpc_get_type(results) != XPC_TYPE_ARRAY) {
-        log_user("[APPLIST] MIP: no LookupResult in reply.\n");
-        xpc_connection_cancel(conn);
-        return apps;
-    }
-
-    xpc_array_apply(results, ^bool(size_t index, xpc_object_t value) {
-        if (xpc_get_type(value) != XPC_TYPE_DICTIONARY) return true;
-        const char *bundleID = xpc_dictionary_get_string(value, "CFBundleIdentifier");
-        if (!bundleID) return true;
-        const char *name = xpc_dictionary_get_string(value, "CFBundleDisplayName");
-        if (!name) name = xpc_dictionary_get_string(value, "CFBundleName");
-        const char *version = xpc_dictionary_get_string(value, "CFBundleShortVersionString");
-
-        InstalledApp *app = [InstalledApp new];
-        app.bundleID = [NSString stringWithUTF8String:bundleID];
-        app.name = name ? [NSString stringWithUTF8String:name] : app.bundleID;
-        app.version = version ? [NSString stringWithUTF8String:version] : @"";
-        [apps addObject:app];
-        return true;
-    });
-
-    xpc_connection_cancel(conn);
-    return apps;
-}
-
-#pragma mark - LSApplicationWorkspace fallback
-
-static NSArray<InstalledApp *> *enumerateViaLSApplicationWorkspace(void)
-{
-    NSMutableArray<InstalledApp *> *apps = [NSMutableArray array];
-
-    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-    if (!workspaceClass) {
-        log_user("[APPLIST] LSW: LSApplicationWorkspace unavailable.\n");
-        return apps;
-    }
-    id workspace = [workspaceClass performSelector:NSSelectorFromString(@"defaultWorkspace")];
-    if (!workspace) return apps;
-
-    NSArray *proxies = [workspace performSelector:NSSelectorFromString(@"allInstalledApplications")];
-    for (id proxy in proxies) {
-        NSString *bundleID = [proxy performSelector:NSSelectorFromString(@"bundleIdentifier")];
-        NSString *name     = [proxy performSelector:NSSelectorFromString(@"localizedName")];
-        NSString *version  = [proxy performSelector:NSSelectorFromString(@"shortVersionString")];
-        if (!bundleID.length) continue;
+        NSString *shortVersion = plist[@"CFBundleShortVersionString"];
+        if (![shortVersion isKindOfClass:[NSString class]]) shortVersion = nil;
+        NSString *bundleVersion = plist[@"CFBundleVersion"];
+        if (![bundleVersion isKindOfClass:[NSString class]]) bundleVersion = nil;
 
         InstalledApp *app = [InstalledApp new];
         app.bundleID = bundleID;
-        app.name = name.length ? name : bundleID;
-        app.version = version;
+        app.name = name;
+        app.version = shortVersion.length ? shortVersion
+                       : (bundleVersion.length ? bundleVersion : @"");
         [apps addObject:app];
     }
+
     return apps;
 }
 
@@ -145,31 +104,23 @@ static NSArray<InstalledApp *> *enumerateViaLSApplicationWorkspace(void)
 
 NSArray<InstalledApp *> *InstalledAppEnumeratorList(void)
 {
-    // 1) MIP — the original binary's path. Best on iOS 17+.
-    NSArray<InstalledApp *> *mipApps = enumerateViaMobileInstallationProxy();
-    if (mipApps.count > 0) {
-        log_user("[APPLIST] Enumerated %lu apps via mobile_installation_proxy.\n",
-                 (unsigned long)mipApps.count);
-        return [mipApps sortedArrayUsingComparator:^NSComparisonResult(InstalledApp *a, InstalledApp *b) {
-            return [a.name localizedCaseInsensitiveCompare:b.name];
-        }];
-    }
-
-    // 2) LSApplicationWorkspace fallback (works on older iOS / with the right
-    //    entitlements; returns empty on stock iOS 17+).
-    NSArray<InstalledApp *> *lswApps = enumerateViaLSApplicationWorkspace();
-    if (lswApps.count > 0) {
-        log_user("[APPLIST] Enumerated %lu apps via LSApplicationWorkspace fallback.\n",
-                 (unsigned long)lswApps.count);
-        return [lswApps sortedArrayUsingComparator:^NSComparisonResult(InstalledApp *a, InstalledApp *b) {
+    // Filesystem enumeration: no entitlement required, works on every iOS
+    // version the host binary supports. This is what the original 2nd-edition
+    // Cyanide IPA actually used (verified via class-dump).
+    NSArray<InstalledApp *> *fsApps = scanInstalledAppsFromFilesystem();
+    if (fsApps.count > 0) {
+        log_user("[APPLIST] Enumerated %lu apps via filesystem (Info.plist scan).\n",
+                 (unsigned long)fsApps.count);
+        return [fsApps sortedArrayUsingComparator:^NSComparisonResult(InstalledApp *a, InstalledApp *b) {
             return [a.name localizedCaseInsensitiveCompare:b.name];
         }];
     }
 
     bool krwReady = kexploit_krw_ready();
-    log_user("[APPLIST] WARNING: no installed apps enumerated (MIP + LSW both empty).\n"
-             "          KRW ready: %s. This usually means the process lacks the required\n"
-             "          entitlements — run the kernel exploit (KRW) first, then reopen\n"
-             "          this screen.\n", krwReady ? "YES" : "NO");
+    log_user("[APPLIST] WARNING: no installed apps enumerated from /var/containers/Bundle/Application.\n"
+             "          KRW ready: %s. Either the path is unreadable in this sandbox\n"
+             "          (rare; usually jailbreaks allow it) or the directory is empty.\n"
+             "          Downgrade requires KRW anyway, so this is informational.\n",
+             krwReady ? "YES" : "NO");
     return @[];
 }
