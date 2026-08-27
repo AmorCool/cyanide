@@ -39,10 +39,36 @@ App Downgrade 并非"直接安装旧 IPA"，而是复用 **App Store 旧版本�
 | 文件 | 类型 | 说明 |
 |------|------|------|
 | `Cyanide/installer/AppListViewController.h` | 新增 | AppInfo 值对象 + 应用列表控制器接口 |
-| `Cyanide/installer/AppListViewController.m` | 新增 | 应用枚举 / 搜索 / Downgrade 全流程 / StoreKitUI 注入 |
-| `Cyanide/SettingsViewController.m` | 修改 | Quick Actions 增加「App Downgrade」入口（row 4），push AppListViewController |
+| `Cyanide/installer/AppListViewController.m` | 新增 | 应用枚举 / 搜索 / Downgrade 全流程 / StoreKitUI 注入 / Block Updates 入口 |
+| `Cyanide/installer/BlockUpdatesViewController.h` | 新增 | Block Updates（阻止应用更新）控制器接口 |
+| `Cyanide/installer/BlockUpdatesViewController.m` | 新增 | 应用枚举 / 阻止列表持久化 / commit |
+| `Cyanide/SettingsViewController.m` | 修改 | Quick Actions 增加「App Downgrade」（row 4）与「Block Updates」（row 5）入口 |
 | `.github/workflows/build.yml` | 新增 | GitHub Actions 构建工作流 |
 | `INTEGRATION_NOTES.md` | 新增 | 本说明文件 |
+
+### 3.3 入口位置（重要）
+
+两个功能入口均位于 **Settings → 顶部「Quick Actions」栏**：
+
+| 行 | 功能 | 目标控制器 |
+|----|------|-----------|
+| 0 | Clean Up | — |
+| 1 | Respring | — |
+| 2 | Reset All Packages | — |
+| 3 | Check for Updates | — |
+| **4** | **App Downgrade** | `AppListViewController` |
+| **5** | **Block Updates** | `BlockUpdatesViewController` |
+
+> 不在 Tweak 栏 / System 栏。若编译后未看到，请先展开 Settings 根页的 Quick Actions 区。
+> AppListViewController 内的每个应用 action sheet 也有「Block Updates」入口（会预选该应用）。
+
+### 3.4 Block Updates 机制说明
+
+- `loadApps` 用 `LSApplicationWorkspace` 枚举已安装应用（IPA 原版用 `mobile_installation_proxy`，功能等价）。
+- 用户勾选要阻止更新的应用（`waitingApps` NSSet），点右上角 **Commit** 提交。
+- 提交逻辑：把 blocked bundle id 列表写入 `com.apple.MobileStore.plist`（键 `CyanideBlockedUpdates`）+ `notify_post` 通知 cfprefsd，并记录
+  `[OK] Blocked updates for: %s` / `[OK] Unblocked updates for: %s`（与 IPA 日志一致）。
+- 阻止更新最终生效需要 respring/reboot（App Store 自动更新在后台进程读取该配置）。
 
 ### 3.1 为什么不需要改 Xcode 工程文件？
 

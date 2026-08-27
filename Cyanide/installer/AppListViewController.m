@@ -12,10 +12,13 @@
 //
 
 #import "AppListViewController.h"
+#import "BlockUpdatesViewController.h"
+#import "InstalledAppEnumerator.h"
 #import "../SettingsViewController.h"
 #import "../LogTextView.h"
 #import "../tweaks/remote_objc.h"
 #import "../TaskRop/RemoteCall.h"
+#import "../kexploit/kexploit_opa334.h"
 
 #pragma mark - Constants (recovered from binary strings)
 
@@ -132,29 +135,19 @@ static NSString * const kSKUIPerformPurchasesSelector =
 
 - (NSArray<AppInfo *> *)enumerateInstalledApps
 {
-    // Uses the private LSApplicationWorkspace API (recovered from the original
-    // binary which used mobile_installation_proxy for the same purpose).
+    // Uses mobile_installation_proxy (MIP) via XPC — the same approach as the
+    // original binary. On iOS 17+, the private LSApplicationWorkspace API
+    // returns an empty list from a non-SpringBoard process, so it is only a
+    // fallback inside InstalledAppEnumerator.
     NSMutableArray<AppInfo *> *result = [NSMutableArray array];
 
-    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-    if (!workspaceClass) {
-        log_user("[APPLIST] LSApplicationWorkspace unavailable.\n");
-        return result;
-    }
-    id workspace = [workspaceClass performSelector:NSSelectorFromString(@"defaultWorkspace")];
-    if (!workspace) return result;
-
-    NSArray *proxies = [workspace performSelector:NSSelectorFromString(@"allInstalledApplications")];
-    for (id proxy in proxies) {
-        NSString *bundleID = [proxy performSelector:NSSelectorFromString(@"bundleIdentifier")];
-        NSString *name     = [proxy performSelector:NSSelectorFromString(@"localizedName")];
-        NSString *version  = [proxy performSelector:NSSelectorFromString(@"shortVersionString")];
-        if (!bundleID.length) continue;
-
+    NSArray<InstalledApp *> *installed = InstalledAppEnumeratorList();
+    for (InstalledApp *ia in installed) {
+        if (!ia.bundleID.length) continue;
         AppInfo *info = [AppInfo new];
-        info.bundleID = bundleID;
-        info.name = name.length ? name : bundleID;
-        info.version = version;
+        info.bundleID = ia.bundleID;
+        info.name = ia.name.length ? ia.name : ia.bundleID;
+        info.version = ia.version;
         [result addObject:info];
     }
 
@@ -383,6 +376,14 @@ static NSString * const kSKUIPerformPurchasesSelector =
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *a) {
         [weakSelf performAppStoreSearch:app.name];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Block Updates"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) {
+        BlockUpdatesViewController *vc = [[BlockUpdatesViewController alloc] initWithStyle:UITableViewStylePlain];
+        vc.preselectedBundleID = app.bundleID;
+        [weakSelf.navigationController pushViewController:vc animated:YES];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
@@ -680,6 +681,22 @@ static NSString * const kSKUIPerformPurchasesSelector =
 {
     log_user("[DOWNGRADE] Requesting downgrade (Track: %lld, Version: %lld)...\n",
              [app.trackID longLongValue], [versionId longLongValue]);
+
+    // The downgrade is executed inside SpringBoard via RemoteCall, which needs
+    // the kernel exploit (KRW) to be live. Surface it early instead of failing
+    // silently at attach time.
+    if (!kexploit_krw_ready()) {
+        log_user("[DOWNGRADE] ERROR: KRW not ready — run the kernel exploit first.\n");
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"KRW Not Ready"
+                             message:@"The kernel exploit (KRW) is not running.\n\n"
+                                     @"Run the exploit from Settings first, then try the "
+                                     @"downgrade again. Check the Log tab for details."
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
 
     UIAlertController *progress = [UIAlertController
         alertControllerWithTitle:@"App Downgrade"

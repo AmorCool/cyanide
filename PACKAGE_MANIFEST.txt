@@ -1,12 +1,15 @@
-Cyanide 1.2.24 integrated source (App Downgrade reverse-engineered integration)
-================================================================================
-This archive contains the original cyanide-1.2.24 source plus the
-reverse-engineered AppListViewController (App Downgrade) integration.
-
+Cyanide 1.2.24 integrated source (App Downgrade + Block Updates)
+=================================================================
 Integrated additions:
   Cyanide/installer/AppListViewController.h / .m   (new - App Downgrade feature)
-  Cyanide/SettingsViewController.m                 (modified - Quick Actions entry)
+  Cyanide/installer/BlockUpdatesViewController.h/.m (new - Block Updates feature)
+  Cyanide/SettingsViewController.m                 (modified - Quick Actions entries)
   .github/workflows/build.yml                      (new - GitHub Actions build)
   INTEGRATION_NOTES.md                             (new - build + dependency notes)
+
+Entries:
+  Settings > Quick Actions > row 4 "App Downgrade"  -> AppListViewController
+  Settings > Quick Actions > row 5 "Block Updates"  -> BlockUpdatesViewController
+  AppListViewController app action sheet > "Block Updates" (preselects the app)
 
 See INTEGRATION_NOTES.md for build instructions and dependency details.

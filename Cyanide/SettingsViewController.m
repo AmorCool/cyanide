@@ -37,6 +37,7 @@
 #import "installer/PackageCatalog.h"
 #import "installer/PackageQueue.h"
 #import "installer/AppListViewController.h"
+#import "installer/BlockUpdatesViewController.h"
 #import "docs/DocsViewController.h"
 #import "PatreonAuth.h"
 #import "UpdateChecker.h"
@@ -7708,7 +7709,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
             if (n == 0) return 0;
             return self.changelogExpanded ? n + 2 : 1;
         }
-        case RootSectionActions:        return 5;
+        case RootSectionActions:        return 6;
         case RootSectionTweakBundles:   return (NSInteger)self.tweakBundleRows.count;
         case RootSectionInDev:         return (NSInteger)self.inDevBundleRows.count;
         case RootSectionSystemBundles:  return (NSInteger)self.systemBundleRows.count;
@@ -10028,13 +10029,21 @@ void cyanide_present_contact(UIViewController *host)
             symbol = @"arrow.down.circle.fill";
             color  = UIColor.systemBlueColor;
             cell.textLabel.text = @"Check for Updates";
-        } else {
+        } else if (indexPath.row == 4) {
             // Row 4: App Downgrade (added from the AppList integration).
             rowEnabled = YES;
             symbol = @"arrow.uturn.down.circle.fill";
             color  = UIColor.systemBlueColor;
             cell.textLabel.text = @"App Downgrade";
             cell.detailTextLabel.text = @"Downgrade an installed app";
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else {
+            // Row 5: Block Updates (added from the AppList integration).
+            rowEnabled = YES;
+            symbol = @"stop.circle.fill";
+            color  = UIColor.systemIndigoColor;
+            cell.textLabel.text = @"Block Updates";
+            cell.detailTextLabel.text = @"Prevent App Store auto-updates per app";
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
 
@@ -11523,6 +11532,9 @@ void cyanide_present_contact(UIViewController *host)
         } else if (indexPath.row == 4) {
             AppListViewController *appList = [[AppListViewController alloc] initWithStyle:UITableViewStylePlain];
             [self.navigationController pushViewController:appList animated:YES];
+        } else if (indexPath.row == 5) {
+            BlockUpdatesViewController *blockUpdates = [[BlockUpdatesViewController alloc] initWithStyle:UITableViewStylePlain];
+            [self.navigationController pushViewController:blockUpdates animated:YES];
         }
     }
 
