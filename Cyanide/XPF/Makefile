@@ -24,7 +24,15 @@ output/macos/libxpf.dylib: $(wildcard src/*.c) $(CHOMA_DEP)
 output/ios/libxpf.dylib: $(wildcard src/*.c) $(CHOMA_DEP)
 	@mkdir -p $(shell dirname $@)
 	$(CC) $(CFLAGS_IOS) $(LDFLAGS) -dynamiclib -install_name @loader_path/libxpf.dylib -o $@ $^
-	ldid -S $@
+# Sign the dylib. Prefer Apple codesign (always available on macOS / Xcode
+# CI runners, generates a real code directory blob). Fall back to ldid if
+# codesign is missing. ldid 2.1.5 on macOS 15 (Tahoe) arm64_tahoe bottle has
+# produced an empty CODE_SIGNATURE superblob (cmd header only, 0 bytes of
+# signature data) on the iOS 26 SDK dylib — that fails iOS link
+# verification at runtime, which is why every exploit stage downstream
+# (socket leak, KRW ready) reports controlSocket=rwSocket=-1 even though
+# the binary otherwise looks identical to a locally-built one.
+	codesign --force --sign - --timestamp=none $@ || ldid -S $@
 
 output/iphonesimulator/libxpf.dylib: $(wildcard src/*.c) $(CHOMA_DEP)
 	@mkdir -p $(shell dirname $@)
@@ -37,7 +45,7 @@ output/macos/xpf_test: $(wildcard src/cli/*.c)
 output/ios/xpf_test: $(wildcard src/cli/*.c)
 	@mkdir -p $(shell dirname $@)
 	$(CC) $(CFLAGS_IOS) $(LDFLAGS) -L$(shell dirname $@) -lxpf -o $@ $^
-	@ldid -S $@
+	@codesign --force --sign - --timestamp=none $@ || ldid -S $@
 
 clean:
 	@rm -rf output
