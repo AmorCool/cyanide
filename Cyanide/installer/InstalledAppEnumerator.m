@@ -28,11 +28,36 @@
 
 #pragma mark - MIP (mobile_installation_proxy) enumeration
 
+// xpc_connection_create_mach_service is marked unavailable in the iOS 26 SDK,
+// but the symbol is still present at runtime on all iOS versions. Resolve it
+// dynamically (standard practice for private XPC services) so this compiles
+// and runs on iOS 17+.
+typedef xpc_connection_t (*xpc_conn_mach_svc_fn)(const char *name,
+                                                 dispatch_queue_t targetq,
+                                                 uint64_t flags);
+
+static xpc_conn_mach_svc_fn xpc_conn_mach_svc_resolve(void)
+{
+    static xpc_conn_mach_svc_fn fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (xpc_conn_mach_svc_fn)dlsym(RTLD_DEFAULT,
+                                         "xpc_connection_create_mach_service");
+    });
+    return fn;
+}
+
 static NSArray<InstalledApp *> *enumerateViaMobileInstallationProxy(void)
 {
     NSMutableArray<InstalledApp *> *apps = [NSMutableArray array];
 
-    xpc_connection_t conn = xpc_connection_create_mach_service(
+    xpc_conn_mach_svc_fn createMachService = xpc_conn_mach_svc_resolve();
+    if (!createMachService) {
+        log_user("[APPLIST] MIP: xpc_connection_create_mach_service not resolvable.\n");
+        return apps;
+    }
+
+    xpc_connection_t conn = createMachService(
         "com.apple.mobile.installation_proxy", NULL, 0);
     if (!conn) {
         log_user("[APPLIST] MIP: failed to create connection.\n");
