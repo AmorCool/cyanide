@@ -64,10 +64,13 @@ jobs:
           ls -la build/
           find build -name "*.ipa" -print
 
-      - name: Upload IPA artifact
+      - name: Upload IPA artifact (with commit SHA in name)
         uses: actions/upload-artifact@v4
         with:
-          name: Cyanide-ipa
+          # Embed the short SHA in the artifact name so users downloading by
+          # tag/branch can visually confirm the build matches the source.
+          name: Cyanide-ipa-${{ github.sha_short }}
           path: |
             build/*.ipa
+            build/*.sha256
           if-no-files-found: warn

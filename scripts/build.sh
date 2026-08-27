@@ -93,3 +93,10 @@ rm -f "$IPA_LATEST"
 SIZE=$(du -h "$IPA_OUT" | cut -f1)
 echo "==> wrote $IPA_OUT ($SIZE)"
 echo "==> symlink $IPA_LATEST -> $IPA_BASENAME"
+
+# Fix #1 (ship/distribution): write a SHA-256 sidecar next to the IPA so users
+# can verify they got THIS build and not a stale artifact. Tooling that
+# downloads artifacts by name can otherwise latch onto a previous run's output.
+IPA_SHA="$(cd "$PWD/build" && shasum -a 256 "$IPA_BASENAME" | awk '{print $1}')"
+printf '%s  %s\n' "$IPA_SHA" "$IPA_BASENAME" > "$PWD/build/$IPA_BASENAME.sha256"
+echo "==> sha256=$IPA_SHA (sidecar: build/$IPA_BASENAME.sha256)"

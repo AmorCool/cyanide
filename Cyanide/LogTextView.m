@@ -427,6 +427,19 @@ static UIColor *colorForLogLine(NSString *line) {
     }
 }
 
+// Fix #4: invalidate the displayLink when this view leaves a window so the
+// tab-bar lifecycle (which on iOS 13+ does NOT call removeFromSuperview on
+// inactive child VCs) doesn't leave a stale displayLink against an invisible
+// view — it would prevent -dealloc from firing under ARC for the view itself.
+- (void)willMoveToWindow:(UIWindow *)newWindow
+{
+    [super willMoveToWindow:newWindow];
+    if (!newWindow && _displayLink) {
+        [_displayLink invalidate];
+        _displayLink = nil;
+    }
+}
+
 - (void)tick {
     [self refreshLogTextForced:NO];
 }

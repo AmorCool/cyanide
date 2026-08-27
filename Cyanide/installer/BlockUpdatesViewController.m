@@ -257,6 +257,10 @@ static NSString * const kMobileStorePreferencesPath =
     [self writeBlockedApps:next];
     // Ask cfprefsd to reload the preference file.
     notify_post("com.apple.MobileStore.prefsChanged");
+    // Also wake the iTunes Store daemon so it re-reads prefs without requiring
+    // a respring/reboot — iTunes Store caches preference values at launch.
+    // (No-op on older iOS versions that don't define the notification.)
+    notify_post("com.apple.itunesstored.foregroundPrefChange");
 
     for (NSString *b in added) {
         log_user("[OK] Blocked updates for: %s\n", b.UTF8String);
@@ -272,7 +276,7 @@ static NSString * const kMobileStorePreferencesPath =
     UIAlertController *ac = [UIAlertController
         alertControllerWithTitle:@"Block Updates"
                          message:[NSString stringWithFormat:
-                             @"Blocked %lu app(s), unblocked %lu app(s). A respring/reboot is required for the change to take full effect.",
+                             @"Blocked %lu app(s), unblocked %lu app(s).\n\nFor best results, force-quit App Store (swipe up from app switcher) or respring. Cyanide notifies the iTunes Store daemon to re-read preferences, but App Store caches them at launch.",
                              (unsigned long)added.count, (unsigned long)removed.count]
                   preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
