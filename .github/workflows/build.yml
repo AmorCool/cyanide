@@ -20,18 +20,16 @@ jobs:
           submodules: false
 
       - name: Fetch private submodule (Cyanide/tweaks/private)
-        if: ${{ secrets.SUBMODULE_TOKEN != '' }}
         env:
           SUB_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
         run: |
-          SUB_URL=$(git config -f .gitmodules --get submodule."Cyanide/tweaks/private".url)
-          echo "Fetching $SUB_URL"
-          git clone --depth 1 "https://x-access-token:${SUB_TOKEN}@${SUB_URL#https://}" Cyanide/tweaks/private
-
-      - name: Warn when private submodule is missing
-        if: ${{ secrets.SUBMODULE_TOKEN == '' }}
-        run: |
-          echo "::warning::SUBMODULE_TOKEN secret not set. Private tweaks (Cyanide/tweaks/private, referenced by the Xcode target) are missing; the app build below will fail until the secret is added."
+          if [ -n "$SUB_TOKEN" ]; then
+            SUB_URL=$(git config -f .gitmodules --get submodule."Cyanide/tweaks/private".url)
+            echo "Fetching $SUB_URL with SUBMODULE_TOKEN"
+            git clone --depth 1 "https://x-access-token:${SUB_TOKEN}@${SUB_URL#https://}" Cyanide/tweaks/private
+          else
+            echo "::warning::SUBMODULE_TOKEN secret not set. Private tweaks (Cyanide/tweaks/private, referenced by the Xcode target) are missing; the app build below will fail until the secret is added."
+          fi
 
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1
